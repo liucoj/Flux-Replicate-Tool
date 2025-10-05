@@ -1,119 +1,140 @@
 """
-title: Flux SCHNELL on Replicate.com 
-description: Generate images with Flux SCHNELL hosted on Replicate.com
-author: Liu_C0j
-version: 1.0
+title: Flux Ultra Replicate Image
+description: Generate images with Flux 1.1 Pro Ultra hosted on Replicate.
+author: Olof Larsson
+author_url: https://olof.tech/conversational-image-generation-tool-for-open-webui/
+git_url: https://github.com/oloflarsson/openwebui-flux-ultra-replicate
+version: 1.1.2
+license: MIT
+required_open_webui_version: 0.6.1
 """
 
-from typing import (
-    Literal,
-)
+from typing import Literal, Optional
 import requests
 import os
 import json
 from pydantic import BaseModel, Field
 
 
-# image correctly appears and description is well formatted
+# Image aspect ratio types
 ImageAspectRatioType = Literal[
     "21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16", "9:21"
 ]
 
 
 class Tools:
+    """
+    OpenWebUI tool for generating images using Flux 1.1 Pro Ultra on Replicate.
+    """
+
     class Valves(BaseModel):
         REPLICATE_API_TOKEN: str = Field(
-            default="",
-            description="Your Replicate API token",
+            default="", description="Your Replicate API token"
         )
 
     def __init__(self):
         self.valves = self.Valves(
             REPLICATE_API_TOKEN=os.getenv("REPLICATE_API_TOKEN", ""),
         )
+        # Disable automatic citations since we emit our own structured messages
+        self.citation = False
 
     async def generate_image(
         self,
         image_prompt: str,
         image_aspect_ratio: ImageAspectRatioType,
         __event_emitter__=None,
+        __metadata__: Optional[dict] = None,
     ) -> str:
         """
-        :param image_prompt: Text prompt for image generation.
-        :param image_aspect_ratio: Aspect ratio for the generated image.
+        Generate an image given a detailed text prompt and aspect ratio.
+
+        Guidelines:
+        - The image_prompt must be in English and describe the image in rich detail.
+        - Include the image type (photo, painting, render, etc.) at the start.
+        - Use "16:9" as default aspect ratio if none is implied.
         """
 
         try:
-            # I don't know why, but emitting the event twice is required for it to appear in the UI.
-            for _ in range(2):
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {"description": "Generating image ...", "done": False},
-                    }
-                )
+            metadata_mode = (
+                __metadata__.get("mode")
+                if __metadata__ and isinstance(__metadata__, dict)
+                else None
+            )
+
+            # Send progress events only if allowed (not in native mode)
+            if metadata_mode != "native" and __event_emitter__:
+                for _ in range(2):
+                    await __event_emitter__(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": "Generating image ...",
+                                "done": False,
+                            },
+                        }
+                    )
 
             replicate_api_token = self.valves.REPLICATE_API_TOKEN
             if not replicate_api_token:
                 raise ValueError("REPLICATE_API_TOKEN is not set")
 
-            image = generate_image_with_replicate_flux_schnell(
+            image_url = generate_image_with_replicate_flux_pro_ultra(
                 replicate_api_token,
                 image_prompt,
                 image_aspect_ratio,
             )
 
-            await __event_emitter__(
-                {
-                    "type": "status",
-                    "data": {"description": "Generated image:", "done": True},
-                }
+            if metadata_mode != "native" and __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {"description": "Generated image", "done": True},
+                    }
+                )
+
+                await __event_emitter__(
+                    {
+                        "type": "message",
+                        "data": {
+                            "content": (
+                                f"![{image_prompt}]({image_url})  \n"
+                                f"**Aspect Ratio:** `{image_aspect_ratio}`  "
+                                f"**Prompt:** `{image_prompt}`  \n"
+                            )
+                        },
+                    }
+                )
+
+            return (
+                "The image was successfully generated and displayed. "
+                "Ask the user if they want any changes or adjustments to the result."
             )
-
-            await __event_emitter__(
-                {
-                    "type": "message",
-                    "data": {
-                        "content": f"![{image_prompt}]({image})  \n**Aspect Ratio:** `{image_aspect_ratio}`  **Prompt:** `{image_prompt}`  \n"
-                    },
-                }
-            )
-
-
-            return f"""
-The image generation completed successfully!
-
-Note that the generated image ALREADY HAS been automatically sent and displayed to the user by the tool.
-You don't need to do anything to show the image to the user.
-
-When you answer now - simply tell the user the image was successfully generated.
-Answer with text only, NO IMAGES, NO ASPECT RATIO, NO IMAGE PROMPT.
-Just tell the user that the image was successfully generated.
-
-At the end of your answer you might ask the user if they want anything changed to the image.
-Should they later come back and ask for changes - just generate a new image with potentially modified parameters based on their feedback.
-
-Keep your answer short and concise.
-"""
 
         except Exception as e:
-            await __event_emitter__(
-                {
-                    "type": "status",
-                    "data": {"description": f"An error occurred: {e}", "done": True},
-                }
-            )
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": f"An error occurred: {e}",
+                            "done": True,
+                        },
+                    }
+                )
+            return f"An error occurred while generating the image: {e}"
 
-            return f"Tell the user: {e}"
 
-
-def generate_image_with_replicate_flux_schnell(
+def generate_image_with_replicate_flux_pro_ultra(
     replicate_api_token: str,
     prompt: str,
     aspect_ratio: ImageAspectRatioType,
 ) -> str:
-    url = "https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions"
+    """
+    Call Replicate's API to generate an image with Flux 1.1 Pro Ultra.
+    """
 
+    url = "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro-ultra/predictions"
     headers = {
         "Authorization": f"Bearer {replicate_api_token}",
         "Content-Type": "application/json",
@@ -122,21 +143,20 @@ def generate_image_with_replicate_flux_schnell(
 
     payload = {
         "input": {
+            "raw": False,
             "prompt": prompt,
-            "go_fast": True,
-            "megapixels": "1",
             "aspect_ratio": aspect_ratio,
-            "output_format": "png",
-            "num_inference_steps": 4
+            "output_format": "jpg",
+            "safety_tolerance": 6,
         }
     }
 
-    response = requests.post(url, headers=headers, data=json.dumps(payload))
+    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
     response.raise_for_status()
     response_json = response.json()
-    remote_image_url = response_json.get("output", "")
-    # THIS IS A FIX - Check if the output is a list and extract the first element
-    if isinstance(remote_image_url, list) and len(remote_image_url) > 0:
-        return remote_image_url[0]
-    else:
-        return remote_image_url
+
+    # Handle both string and list outputs from Replicate
+    output = response_json.get("output", "")
+    if isinstance(output, list) and len(output) > 0:
+        return output[0]
+    return output
